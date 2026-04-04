@@ -1,0 +1,28 @@
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Dependencies
+node_modules/
+
+# Build
+dist/
+build/
+
+# Temporary
+tmp/
+*.tmp
+*.bak
+
+# Uploads
+uploads/
