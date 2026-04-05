@@ -26,3 +26,10 @@ tmp/
 
 # Uploads
 uploads/
+
+# WorkBuddy (local session data)
+.workbuddy/
+
+# Intermediate batch files
+data/batches/
+data/answer_diff_report.json
