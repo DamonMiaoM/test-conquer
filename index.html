@@ -27,6 +27,18 @@ h1 { text-align: center; font-size: 1.5rem; margin-bottom: 20px; color: #2c3e50;
 /* Mode toggle */
 .mode-toggle { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; font-size: 0.9rem; }
 
+/* Choice question styles */
+.choice-card-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 0 20px 24px; }
+.btn-choice-option { padding: 14px; font-size: 1.05rem; border: 2px solid #e0e0e0; border-radius: 8px; cursor: pointer; background: #fff; transition: all 0.2s; font-weight: 600; text-align: left; }
+.btn-choice-option:hover { border-color: #4A90D9; color: #4A90D9; }
+.btn-choice-option.selected { background: #4A90D9; color: #fff; border-color: #4A90D9; }
+.btn-choice-option.correct { background: #27ae60; color: #fff; border-color: #27ae60; }
+.btn-choice-option.wrong { background: #e74c3c; color: #fff; border-color: #e74c3c; }
+.btn-choice-option:disabled { opacity: 0.6; cursor: default; }
+.btn-choice-option .opt-letter { display: inline-block; width: 28px; height: 28px; line-height: 28px; text-align: center; border-radius: 50%; background: rgba(0,0,0,0.06); margin-right: 10px; font-size: 0.95rem; vertical-align: middle; }
+.btn-choice-option.selected .opt-letter { background: rgba(255,255,255,0.3); }
+.choice-feedback { margin-top: 16px; padding: 20px; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+
 /* Question card */
 .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); overflow: hidden; }
 .card-header { background: #4A90D9; color: #fff; padding: 12px 20px; font-size: 0.9rem; }
@@ -147,7 +159,41 @@ h1 { text-align: center; font-size: 1.5rem; margin-bottom: 20px; color: #2c3e50;
     </div>
 
     <div id="tab-choice" class="tab-content">
-        <div class="placeholder">选择题 — 开发中，敬请期待</div>
+        <div id="choice-area">
+            <div class="progress-container">
+                <div class="progress-bar" id="choice-progress-bar"></div>
+                <span class="progress-text" id="choice-progress-text">0/300</span>
+            </div>
+
+            <div class="mode-toggle">
+                <label><input type="checkbox" id="choice-random-mode" checked> 随机出题</label>
+                <button id="choice-wrong-book-btn" class="btn-secondary">错题本 (<span id="choice-wrong-count">0</span>)</button>
+            </div>
+
+            <div class="card" id="choice-question-card">
+                <div class="card-header">
+                    <span id="choice-question-number">第 1 题 / 共 300 题</span>
+                </div>
+                <div class="card-body">
+                    <p id="choice-question-text" class="question-text"></p>
+                </div>
+                <div class="choice-card-actions" id="choice-card-actions"></div>
+            </div>
+
+            <div class="choice-feedback hidden" id="choice-feedback-area">
+                <div id="choice-feedback-result" class="feedback-result"></div>
+                <div id="choice-feedback-explanation" class="feedback-explanation"></div>
+            </div>
+
+            <div class="nav-buttons">
+                <button class="btn-nav" id="choice-btn-prev">上一题</button>
+                <button class="btn-nav" id="choice-btn-next">下一题</button>
+            </div>
+
+            <div class="keyboard-hint">
+                快捷键: A/B/C/D 选择 | ←/→ 上一题/下一题 | Space 下一题
+            </div>
+        </div>
     </div>
 
     <div id="tab-operation" class="tab-content">
@@ -174,17 +220,24 @@ h1 { text-align: center; font-size: 1.5rem; margin-bottom: 20px; color: #2c3e50;
 <script>
 // ===== Question Data =====
 let questions = [];
+let choiceQuestions = [];
 
 // Load questions from external JSON
-fetch('data/questions.json')
-    .then(r => { if (!r.ok) throw new Error('Failed to load questions'); return r.json(); })
-    .then(data => {
-        questions = data;
-        // Initialize app after data loads
+Promise.all([
+    fetch('data/questions.json').then(r => { if (!r.ok) throw new Error('Failed to load judge questions'); return r.json(); }),
+    fetch('data/single_choice.json').then(r => { if (!r.ok) throw new Error('Failed to load choice questions'); return r.json(); })
+])
+    .then(([judgeData, choiceData]) => {
+        questions = judgeData;
+        choiceQuestions = choiceData;
         loadState();
         updateWrongCount();
         state.currentOrder = generateOrder(state.randomMode);
         displayQuestion();
+        choiceLoadState();
+        updateChoiceWrongCount();
+        choiceState.currentOrder = choiceGenerateOrder(choiceState.randomMode);
+        displayChoiceQuestion();
     })
     .catch(err => {
         console.error('Error loading questions:', err);
@@ -201,6 +254,14 @@ const state = {
     history: []
 };
 
+const choiceState = {
+    currentIndex: 0,
+    currentOrder: [],
+    answered: false,
+    wrongQuestions: [],
+    randomMode: true
+};
+
 // ===== Persistence =====
 function loadState() {
     const saved = localStorage.getItem('test-conquer-wrong');
@@ -211,9 +272,29 @@ function saveState() {
     localStorage.setItem('test-conquer-wrong', JSON.stringify(state.wrongQuestions));
 }
 
+function choiceLoadState() {
+    const saved = localStorage.getItem('test-conquer-choice-wrong');
+    if (saved) choiceState.wrongQuestions = JSON.parse(saved);
+}
+
+function choiceSaveState() {
+    localStorage.setItem('test-conquer-choice-wrong', JSON.stringify(choiceState.wrongQuestions));
+}
+
 // ===== Question Ordering =====
 function generateOrder(random = true) {
     const indices = Array.from({ length: questions.length }, (_, i) => i);
+    if (random) {
+        for (let i = indices.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [indices[i], indices[j]] = [indices[j], indices[i]];
+        }
+    }
+    return indices;
+}
+
+function choiceGenerateOrder(random = true) {
+    const indices = Array.from({ length: choiceQuestions.length }, (_, i) => i);
     if (random) {
         for (let i = indices.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
@@ -278,6 +359,68 @@ function checkAnswer(userChoice) {
     document.getElementById('feedback-area').classList.remove('hidden');
 }
 
+function displayChoiceQuestion() {
+    const q = choiceQuestions[choiceState.currentOrder[choiceState.currentIndex]];
+    document.getElementById('choice-question-number').textContent =
+        `第 ${choiceState.currentIndex + 1} 题 / 共 ${choiceState.currentOrder.length} 题`;
+    document.getElementById('choice-question-text').textContent = q.question;
+
+    const pct = (choiceState.currentIndex / choiceState.currentOrder.length) * 100;
+    document.getElementById('choice-progress-bar').style.width = pct + '%';
+    document.getElementById('choice-progress-text').textContent =
+        `${choiceState.currentIndex}/${choiceState.currentOrder.length}`;
+
+    const actionsEl = document.getElementById('choice-card-actions');
+    actionsEl.innerHTML = '';
+    q.options.forEach(opt => {
+        const btn = document.createElement('button');
+        btn.className = 'btn-choice-option';
+        btn.dataset.letter = opt.letter;
+        btn.innerHTML = `<span class="opt-letter">${opt.letter}</span>${opt.text}`;
+        btn.addEventListener('click', () => checkChoiceAnswer(opt.letter));
+        actionsEl.appendChild(btn);
+    });
+
+    document.getElementById('choice-feedback-area').classList.add('hidden');
+    choiceState.answered = false;
+}
+
+function checkChoiceAnswer(userChoice) {
+    if (choiceState.answered) return;
+    choiceState.answered = true;
+    const q = choiceQuestions[choiceState.currentOrder[choiceState.currentIndex]];
+    const isCorrect = (userChoice === q.answer);
+
+    document.querySelectorAll('.btn-choice-option').forEach(b => {
+        b.disabled = true;
+        const letter = b.dataset.letter;
+        if (letter === q.answer) {
+            b.classList.add('correct');
+        } else if (letter === userChoice && !isCorrect) {
+            b.classList.add('wrong');
+        }
+    });
+
+    const feedbackResult = document.getElementById('choice-feedback-result');
+    const feedbackExplanation = document.getElementById('choice-feedback-explanation');
+
+    if (isCorrect) {
+        feedbackResult.className = 'feedback-result correct';
+        feedbackResult.textContent = '✓ 回答正确！';
+    } else {
+        feedbackResult.className = 'feedback-result wrong';
+        feedbackResult.textContent = `✗ 回答错误 — 正确答案：${q.answer}`;
+        if (!choiceState.wrongQuestions.includes(q.id)) {
+            choiceState.wrongQuestions.push(q.id);
+            choiceSaveState();
+            updateChoiceWrongCount();
+        }
+    }
+
+    feedbackExplanation.textContent = q.explanation || '';
+    document.getElementById('choice-feedback-area').classList.remove('hidden');
+}
+
 // ===== Navigation =====
 function nextQuestion() {
     if (state.currentIndex < state.currentOrder.length - 1) {
@@ -297,6 +440,24 @@ function prevQuestion() {
     }
 }
 
+function choiceNextQuestion() {
+    if (choiceState.currentIndex < choiceState.currentOrder.length - 1) {
+        choiceState.currentIndex++;
+        displayChoiceQuestion();
+    } else {
+        choiceState.currentOrder = choiceGenerateOrder(choiceState.randomMode);
+        choiceState.currentIndex = 0;
+        displayChoiceQuestion();
+    }
+}
+
+function choicePrevQuestion() {
+    if (choiceState.currentIndex > 0) {
+        choiceState.currentIndex--;
+        displayChoiceQuestion();
+    }
+}
+
 // ===== Wrong Question Book =====
 function updateWrongCount() {
     document.getElementById('wrong-count').textContent = state.wrongQuestions.length;
@@ -309,6 +470,26 @@ function showWrongBook() {
     } else {
         list.innerHTML = state.wrongQuestions.map(id => {
             const q = questions.find(q => q.id === id);
+            return `<div class="wrong-item" data-id="${id}">
+                <div class="wrong-item-id">第 ${id} 题</div>
+                <div class="wrong-item-text">${q.question}</div>
+            </div>`;
+        }).join('');
+    }
+    document.getElementById('wrong-modal').classList.remove('hidden');
+}
+
+function updateChoiceWrongCount() {
+    document.getElementById('choice-wrong-count').textContent = choiceState.wrongQuestions.length;
+}
+
+function showChoiceWrongBook() {
+    const list = document.getElementById('wrong-list');
+    if (choiceState.wrongQuestions.length === 0) {
+        list.innerHTML = '<div class="wrong-empty">还没有错题哦，继续加油！</div>';
+    } else {
+        list.innerHTML = choiceState.wrongQuestions.map(id => {
+            const q = choiceQuestions.find(q => q.id === id);
             return `<div class="wrong-item" data-id="${id}">
                 <div class="wrong-item-id">第 ${id} 题</div>
                 <div class="wrong-item-text">${q.question}</div>
@@ -352,41 +533,89 @@ document.getElementById('clear-wrong').addEventListener('click', () => {
         state.wrongQuestions = [];
         saveState();
         updateWrongCount();
+        choiceState.wrongQuestions = [];
+        choiceSaveState();
+        updateChoiceWrongCount();
         showWrongBook();
     }
 });
 document.getElementById('retry-wrong').addEventListener('click', () => {
-    if (state.wrongQuestions.length === 0) return;
-    state.currentOrder = state.wrongQuestions.map(id => questions.findIndex(q => q.id === id));
-    state.currentIndex = 0;
-    document.getElementById('wrong-modal').classList.add('hidden');
-    displayQuestion();
+    if (document.getElementById('tab-judge').classList.contains('active')) {
+        if (state.wrongQuestions.length === 0) return;
+        state.currentOrder = state.wrongQuestions.map(id => questions.findIndex(q => q.id === id));
+        state.currentIndex = 0;
+        document.getElementById('wrong-modal').classList.add('hidden');
+        displayQuestion();
+    } else if (document.getElementById('tab-choice').classList.contains('active')) {
+        if (choiceState.wrongQuestions.length === 0) return;
+        choiceState.currentOrder = choiceState.wrongQuestions.map(id => choiceQuestions.findIndex(q => q.id === id));
+        choiceState.currentIndex = 0;
+        document.getElementById('wrong-modal').classList.add('hidden');
+        displayChoiceQuestion();
+    }
 });
 document.getElementById('wrong-list').addEventListener('click', (e) => {
     const item = e.target.closest('.wrong-item');
     if (!item) return;
     const id = parseInt(item.dataset.id);
-    const idx = questions.findIndex(q => q.id === id);
-    if (idx >= 0) {
-        state.currentOrder = [idx];
-        state.currentIndex = 0;
-        document.getElementById('wrong-modal').classList.add('hidden');
-        displayQuestion();
+    if (document.getElementById('tab-judge').classList.contains('active')) {
+        const idx = questions.findIndex(q => q.id === id);
+        if (idx >= 0) {
+            state.currentOrder = [idx];
+            state.currentIndex = 0;
+            document.getElementById('wrong-modal').classList.add('hidden');
+            displayQuestion();
+        }
+    } else if (document.getElementById('tab-choice').classList.contains('active')) {
+        const idx = choiceQuestions.findIndex(q => q.id === id);
+        if (idx >= 0) {
+            choiceState.currentOrder = [idx];
+            choiceState.currentIndex = 0;
+            document.getElementById('wrong-modal').classList.add('hidden');
+            displayChoiceQuestion();
+        }
     }
 });
 
+// Choice tab event listeners
+document.getElementById('choice-btn-next').addEventListener('click', choiceNextQuestion);
+document.getElementById('choice-btn-prev').addEventListener('click', choicePrevQuestion);
+document.getElementById('choice-random-mode').addEventListener('change', (e) => {
+    choiceState.randomMode = e.target.checked;
+    choiceState.currentOrder = choiceGenerateOrder(choiceState.randomMode);
+    choiceState.currentIndex = 0;
+    displayChoiceQuestion();
+});
+document.getElementById('choice-wrong-book-btn').addEventListener('click', showChoiceWrongBook);
+
 // ===== Keyboard Shortcuts =====
 document.addEventListener('keydown', (e) => {
-    if (!document.getElementById('tab-judge').classList.contains('active')) return;
-    if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        checkAnswer('false');
-    } else if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        checkAnswer('true');
-    } else if (e.key === ' ') {
-        e.preventDefault();
-        if (state.answered) nextQuestion();
+    if (document.getElementById('tab-judge').classList.contains('active')) {
+        if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            checkAnswer('false');
+        } else if (e.key === 'ArrowRight') {
+            e.preventDefault();
+            checkAnswer('true');
+        } else if (e.key === ' ') {
+            e.preventDefault();
+            if (state.answered) nextQuestion();
+        }
+    } else if (document.getElementById('tab-choice').classList.contains('active')) {
+        const key = e.key.toUpperCase();
+        if (['A', 'B', 'C', 'D', 'E'].includes(key)) {
+            e.preventDefault();
+            checkChoiceAnswer(key);
+        } else if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            choicePrevQuestion();
+        } else if (e.key === 'ArrowRight') {
+            e.preventDefault();
+            choiceNextQuestion();
+        } else if (e.key === ' ') {
+            e.preventDefault();
+            if (choiceState.answered) choiceNextQuestion();
+        }
     }
 });
 
